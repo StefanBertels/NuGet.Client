@@ -131,9 +131,8 @@ namespace NuGet.ProjectModel
                 throw new ArgumentNullException(nameof(rootUniqueName));
             }
 
-            var projectsByPath = _projects
-                .Where(t => !string.IsNullOrEmpty(t.Value?.RestoreMetadata?.ProjectPath))
-                .GroupBy(t => t.Value.RestoreMetadata.ProjectPath, PathUtility.GetStringComparerBasedOnOS())
+            var projectsByUniqueName = _projects
+                .GroupBy(t => t.Value.RestoreMetadata.ProjectUniqueName, PathUtility.GetStringComparerBasedOnOS())
                 .ToDictionary(t => t.Key, t => t.First().Value, PathUtility.GetStringComparerBasedOnOS());
 
             var closure = new List<PackageSpec>();
@@ -154,7 +153,7 @@ namespace NuGet.ProjectModel
                     closure.Add(spec);
 
                     // Find children
-                    foreach (var projectName in GetProjectReferenceNames(spec, projectsByPath))
+                    foreach (var projectName in GetProjectReferenceNames(spec, projectsByUniqueName))
                     {
                         if (added.Add(projectName))
                         {
@@ -167,14 +166,14 @@ namespace NuGet.ProjectModel
             return closure;
         }
 
-        private static IEnumerable<string> GetProjectReferenceNames(PackageSpec spec, Dictionary<string, PackageSpec> projectsByPath)
+        private static IEnumerable<string> GetProjectReferenceNames(PackageSpec spec, Dictionary<string, PackageSpec> projectsByUniqueName)
         {
             // Handle projects which may not have specs, and which may not have references
             return spec?.RestoreMetadata?
                 .TargetFrameworks
                 .SelectMany(e => e.ProjectReferences)
-                .Where(project => projectsByPath.ContainsKey(project.ProjectPath))
-                .Select(project => projectsByPath[project.ProjectPath]?.RestoreMetadata?.ProjectUniqueName)
+                .Where(project => projectsByUniqueName.ContainsKey(project.ProjectPath))
+                .Select(project => projectsByUniqueName[project.ProjectPath]?.RestoreMetadata?.ProjectUniqueName)
                 .Where(t => !string.IsNullOrEmpty(t))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 ?? Enumerable.Empty<string>();
