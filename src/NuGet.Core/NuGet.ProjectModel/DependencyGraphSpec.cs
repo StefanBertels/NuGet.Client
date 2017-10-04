@@ -152,7 +152,7 @@ namespace NuGet.ProjectModel
                     closure.Add(spec);
 
                     // Find children
-                    foreach (var projectName in projectsByUniqueName.Keys)
+                    foreach (var projectName in GetProjectReferenceNames(spec, projectsByUniqueName))
                     {
                         if (added.Add(projectName))
                         {
@@ -163,6 +163,17 @@ namespace NuGet.ProjectModel
             }
 
             return closure;
+        }
+
+        private static IEnumerable<string> GetProjectReferenceNames(PackageSpec spec, Dictionary<string, PackageSpec> ProjectsByUniqueName)
+        {
+            // Handle projects which may not have specs, and which may not have references
+            return spec?.RestoreMetadata?
+                .TargetFrameworks
+                .SelectMany(e => e.ProjectReferences)
+                .Where(project => ProjectsByUniqueName.ContainsKey(project.ProjectUniqueName))
+                .Select(project => project.ProjectUniqueName)
+                ?? Enumerable.Empty<string>();
         }
 
         public void AddRestore(string projectUniqueName)
