@@ -18,11 +18,13 @@ using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.TextManager.Interop;
+using Microsoft.VisualStudio.Threading;
 using NuGet.PackageManagement;
 using NuGet.PackageManagement.VisualStudio;
 using NuGet.VisualStudio;
 using NuGetConsole.Implementation.Console;
 using NuGetConsole.Implementation.PowerConsole;
+using Task = System.Threading.Tasks.Task;
 
 namespace NuGetConsole.Implementation
 {
@@ -33,6 +35,8 @@ namespace NuGetConsole.Implementation
     [SuppressMessage("Microsoft.VisualStudio.Threading.Analyzers", "VSTHRD010", Justification = "NuGet/Home#4833 Baseline")]
     public sealed class PowerConsoleToolWindow : ToolWindowPane, IOleCommandTarget, IPowerConsoleService
     {
+        private JoinableTask _loadTask;
+
         /// <summary>
         /// Get VS IComponentModel service.
         /// </summary>
@@ -146,40 +150,12 @@ namespace NuGetConsole.Implementation
             var cmdUi = VSConstants.GUID_TextEditorFactory;
             windowFrame.SetGuidProperty((int)__VSFPROPID.VSFPROPID_InheritKeyBindings, ref cmdUi);
 
-            // commented since this code is only applicable for LSL mode edge case but LSL is being
-            // deprecated
-            // refresh PMC UI to update default project name after solution load completed.
-            /*SolutionManager.SolutionOpened += (o, e) =>
-            {
-                VsUIShell.UpdateCommandUI(0);
-            };*/
-
-            ThreadHelper.JoinableTaskFactory.StartOnIdle(
+            // start a task when VS us idle and dont await it immediately
+            _loadTask = ThreadHelper.JoinableTaskFactory.StartOnIdle(
                 async () =>
                 {
-                    await System.Threading.Tasks.Task.Run(
-                        () =>
-                        {
-
-                            // pause for a tiny moment to let the tool window open before initializing the host
-                            var timer = new DispatcherTimer();
-                            timer.Interval = TimeSpan.FromMilliseconds(10);
-                            timer.Tick += (o, e) =>
-                            {
-                                // all exceptions from the timer thread should be caught to avoid crashing VS
-                                try
-                                {
-                                    LoadConsoleEditor();
-                                    timer.Stop();
-                                }
-                                catch (Exception x)
-                                {
-                                    ExceptionHelper.WriteErrorToActivityLog(x);
-                                }
-                            };
-                            timer.Start();
-                        });
-                },VsTaskRunContext.UIThreadIdlePriority);
+                    await Task.Run(LoadConsoleEditorAsync);
+                });
         }
 
         protected override void OnClose()
@@ -199,16 +175,20 @@ namespace NuGetConsole.Implementation
         /// <returns></returns>
         protected override bool PreProcessMessage(ref Message m)
         {
-            var vsWindowPane = VsTextView as IVsWindowPane;
-            if (vsWindowPane != null)
+            // Now, await for the _loadTask which was started in OnToolWindowCreated API
+            if (_loadTask != null && _loadTask.IsCompleted)
             {
-                var pMsg = new MSG[1];
-                pMsg[0].hwnd = m.HWnd;
-                pMsg[0].message = (uint)m.Msg;
-                pMsg[0].wParam = m.WParam;
-                pMsg[0].lParam = m.LParam;
+                var vsWindowPane = VsTextView as IVsWindowPane;
+                if (vsWindowPane != null)
+                {
+                    var pMsg = new MSG[1];
+                    pMsg[0].hwnd = m.HWnd;
+                    pMsg[0].message = (uint)m.Msg;
+                    pMsg[0].wParam = m.WParam;
+                    pMsg[0].lParam = m.LParam;
 
-                return vsWindowPane.TranslateAccelerator(pMsg) == 0;
+                    return vsWindowPane.TranslateAccelerator(pMsg) == 0;
+                }
             }
 
             return base.PreProcessMessage(ref m);
@@ -401,23 +381,33 @@ namespace NuGetConsole.Implementation
             get { return PowerConsoleWindow.ActiveHostInfo; }
         }
 
-        private void LoadConsoleEditor()
+        private async Task LoadConsoleEditorAsync()
         {
-            if (WpfConsole != null)
+            try
             {
-                // allow the console to start writing output
-                WpfConsole.StartWritingOutput();
-
-                var consolePane = WpfConsole.Content as FrameworkElement;
-                ConsoleParentPane.AddConsoleEditor(consolePane);
-
-                // WPF doesn't handle input focus automatically in this scenario. We
-                // have to set the focus manually, otherwise the editor is displayed but
-                // not focused and not receiving keyboard inputs until clicked.
-                if (consolePane != null)
+                if (WpfConsole != null)
                 {
-                    PendingMoveFocus(consolePane);
+                    // allow the console to start writing output
+                    WpfConsole.StartWritingOutput();
+
+                    var consolePane = WpfConsole.Content as FrameworkElement;
+
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+                    ConsoleParentPane.AddConsoleEditor(consolePane);
+
+                    // WPF doesn't handle input focus automatically in this scenario. We
+                    // have to set the focus manually, otherwise the editor is displayed but
+                    // not focused and not receiving keyboard inputs until clicked.
+                    if (consolePane != null)
+                    {
+                        PendingMoveFocus(consolePane);
+                    }
                 }
+            }
+            catch (Exception x)
+            {
+                ExceptionHelper.WriteErrorToActivityLog(x);
             }
         }
 
